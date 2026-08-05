@@ -1,0 +1,49 @@
+---
+name: Unity Test
+# STUB producer for the ci-status-comment lab. Stands in for decentraland's real
+# Unity Test workflow. It emits the exact artifacts the lint and tests comment
+# workflows download and parse:
+#   - warning-result.json         -> lint ratchet (here: 10 => 8, Passed)
+#   - failed-tests-editmode.json  -> EditMode suite (here: all pass)
+#   - failed-tests-playmode.json  -> PlayMode suite (here: 2 failures -> table + details)
+# Named "Unity Test" so both pr-comment-warnings and pr-comment-test-failures
+# match it. The sleep keeps the run alive long enough to see the "pending" state.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  Test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate tests + lint
+        run: |
+          echo "Pretending to run tests + lint for ~30s…"
+          sleep 30
+          cat > warning-result.json <<'JSON'
+          {"count":8,"baseline":10,"allow_equal":false,"pr_findings_total":0,"pr_findings":[],"droppable":[]}
+          JSON
+          cat > failed-tests-editmode.json <<'JSON'
+          {"hasResults":true,"passed":128,"total":128,"failed":[]}
+          JSON
+          cat > failed-tests-playmode.json <<'JSON'
+          {"hasResults":true,"passed":54,"total":56,"failed":["PlayMode.Foo.DoesThing","PlayMode.Bar.HandlesEdge"]}
+          JSON
+      - name: Upload warning ratchet result
+        uses: actions/upload-artifact@v4
+        with:
+          name: warning-result
+          path: warning-result.json
+      - name: Upload editmode result
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-tests-editmode
+          path: failed-tests-editmode.json
+      - name: Upload playmode result
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-tests-playmode
+          path: failed-tests-playmode.json

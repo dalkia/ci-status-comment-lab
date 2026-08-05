@@ -1,0 +1,105 @@
+---
+name: Comment Artifact URL on PR
+# LAB copy — SIMPLIFIED. The real decentraland workflow also downloads size
+# reports, looks up the latest release, computes S3 download URLs, and dispatches
+# a performance test; none of that is reproducible outside decentraland. This
+# copy keeps the part under test: the "build" section's pending -> success/failed
+# flow through the ci-status-comment composite action.
+#
+# 'requested' -> reset the build section to "pending".
+# 'completed' -> fill it in: Success (with commit + logs) / Failed.
+on:
+  workflow_run:
+    types:
+      - "requested"
+      - "completed"
+    workflows:
+      - "Unity Cloud Build"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pre-validation:
+    runs-on: ubuntu-latest
+    outputs:
+      pr-number: ${{ steps.check-pr.outputs.pr-number }}
+    steps:
+      - name: Resolve PR number
+        id: check-pr
+        env:
+          WORKFLOW_RUN_EVENT_OBJ: ${{ toJSON(github.event.workflow_run) }}
+        run: |
+          PR_NUMBER=$(jq -r '.pull_requests[0].number' <<< "$WORKFLOW_RUN_EVENT_OBJ")
+          echo "PR number: $PR_NUMBER"
+          if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
+            echo "pr-number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+  comment-pending:
+    needs: pre-validation
+    if: github.event.action == 'requested' && needs.pre-validation.outputs.pr-number != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI status action
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions/ci-status-comment
+          sparse-checkout-cone-mode: false
+
+      - name: Reset build section to pending
+        uses: ./.github/actions/ci-status-comment
+        with:
+          pr-number: ${{ needs.pre-validation.outputs.pr-number }}
+          section: build
+          github-token: ${{ github.token }}
+          body: |-
+            ![Build](https://img.shields.io/badge/Build-Pending!-ffff00?logo=github&style=for-the-badge)  <img src="https://ui.decentraland.org/decentraland_256x256.png" width="30">
+
+            New build in progress, come back later!
+
+  comment-result:
+    needs: pre-validation
+    if: github.event.action == 'completed' && needs.pre-validation.outputs.pr-number != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI status action
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions/ci-status-comment
+          sparse-checkout-cone-mode: false
+
+      - name: Compose build section
+        id: body
+        env:
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          DELIM="EOF_$(uuidgen)"
+          if [ "$CONCLUSION" = "success" ]; then
+            BADGE="https://img.shields.io/badge/Build-Success!-3fb950?logo=unity&logoColor=white&style=for-the-badge"
+            MSG=$'Windows and Mac build successful! _(stubbed lab build)_\n\n| Name | Value |\n| ---- | ---- |\n| Commit | '"$HEAD_SHA"$' |\n| Logs | '"$RUN_URL"$' |'
+          else
+            BADGE="https://img.shields.io/badge/Build-Failed!-ff0000?logo=unity&logoColor=white&style=for-the-badge"
+            MSG="Build failed (\`$CONCLUSION\`)! Check the [logs](${RUN_URL})."
+          fi
+          {
+            echo "body<<$DELIM"
+            echo "![Build]($BADGE)  <img src=\"https://ui.decentraland.org/decentraland_256x256.png\" width=\"30\">"
+            echo ""
+            printf '%s\n' "$MSG"
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update build section
+        uses: ./.github/actions/ci-status-comment
+        with:
+          pr-number: ${{ needs.pre-validation.outputs.pr-number }}
+          section: build
+          github-token: ${{ github.token }}
+          body: ${{ steps.body.outputs.body }}

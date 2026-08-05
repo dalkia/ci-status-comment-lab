@@ -1,0 +1,30 @@
+---
+name: Unity Cloud Build
+# STUB producer for the ci-status-comment lab. Stands in for decentraland's real
+# Unity Cloud Build workflow. It only needs to (a) be named "Unity Cloud Build"
+# so the build comment workflow's workflow_run trigger matches, and (b) upload a
+# Decentraland_* artifact so its "did the build actually run?" check passes.
+# The sleep keeps the run alive long enough to see the "pending" state.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate a build
+        run: |
+          echo "Pretending to build for ~30s so the pending banner is visible…"
+          sleep 30
+          mkdir -p out
+          echo "dummy build output" > out/Decentraland_windows64.txt
+          (cd out && zip -q Decentraland_windows64.zip Decentraland_windows64.txt)
+      - name: Upload dummy build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Decentraland_windows64
+          path: out/Decentraland_windows64.zip
