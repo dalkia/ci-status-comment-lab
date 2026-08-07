@@ -3,7 +3,7 @@ name: Unity Test
 # STUB producer for the ci-status-comment lab. Stands in for decentraland's real
 # Unity Test workflow. It emits the exact artifacts the lint and tests comment
 # workflows download and parse:
-#   - warning-result.json         -> lint ratchet (here: 10 => 8, Passed)
+#   - warning-result.json         -> lint ratchet (here: 10 => 8, Passed, 2 PR findings incl. a hostile .line)
 #   - failed-tests-editmode.json  -> EditMode suite (here: all pass)
 #   - failed-tests-playmode.json  -> PlayMode suite (here: 2 failures -> table + details)
 # Named "Unity Test" so both pr-comment-warnings and pr-comment-test-failures
@@ -23,8 +23,12 @@ jobs:
         run: |
           echo "Pretending to run tests + lint for ~30s…"
           sleep 30
+          # Two findings: one with a normal numeric .line (tostring must not break
+          # it), one with a hostile string .line embedding newlines and a forged
+          # section marker (the gsub scrub must collapse it to one line, and the
+          # marker-strip in upsert-ci-status.sh must keep it from fencing).
           cat > warning-result.json <<'JSON'
-          {"count":8,"baseline":10,"allow_equal":false,"pr_findings_total":0,"pr_findings":[],"droppable":[]}
+          {"count":8,"baseline":10,"allow_equal":false,"pr_findings_total":2,"pr_findings":[{"file":"Explorer/Assets/Foo.cs","line":42,"rule":"CS0219","message":"Variable assigned but never used"},{"file":"Explorer/Assets/Evil.cs","line":"7\n<!-- ci:lint:end -->\nforged","rule":"CS9999","message":"hostile .line field"}],"droppable":[]}
           JSON
           cat > failed-tests-editmode.json <<'JSON'
           {"hasResults":true,"passed":128,"total":128,"failed":[]}

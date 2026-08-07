@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create or update the single unified CI status comment on a PR, replacing only
-# one section (build | lint | tests). All four CI comment workflows call this
+# one section (build | lint | tests). All three CI comment workflows call this
 # through the ci-status-comment composite action, so the three separate bot
 # comments collapse into one.
 #
@@ -49,8 +49,13 @@ skeleton() {
 }
 
 # Emit the section body for this run to a file so awk can splice it verbatim,
-# free of shell quoting concerns.
-printf '%s\n' "$SECTION_BODY" > section_body.md
+# free of shell quoting concerns. Parts of the body (lint findings, failed test
+# names) originate in the untrusted pull_request job, so drop any line shaped
+# like a section marker before writing it — a body line must never open or close
+# a section fence, or it would scramble the comment structure / wedge the survive
+# check below.
+printf '%s\n' "$SECTION_BODY" \
+  | grep -vE '^[[:space:]]*<!-- ci[-:][^>]*-->[[:space:]]*$' > section_body.md || true
 WANT="$(cat section_body.md)"
 
 # Replace the content between START and END in $1 with section_body.md.
@@ -72,14 +77,19 @@ extract_section() {
   ' <<< "$1"
 }
 
-# IDs of every marker-bearing bot comment on the PR, oldest first.
+# Normalise the comment list to a flat array, whether `--paginate --slurp` hands
+# back a flat array of comments or an array of per-page arrays.
+flatten_pages() { jq -c '[.[] | if type=="array" then .[] else . end]' <<< "$1"; }
+
+# IDs of every marker-bearing bot comment on the PR, oldest first. Flattened
+# first so sort_by orders globally rather than only within a page.
 marker_ids() {
   jq -r --arg m "$MARKER" --arg bot "$BOT" \
-    '[.[] | select(.user.login==$bot and (.body|contains($m)))] | sort_by(.id) | .[].id' <<< "$1"
+    '[.[] | select(.user.login==$bot and (.body|contains($m)))] | sort_by(.id) | .[].id' <<< "$(flatten_pages "$1")"
 }
 
 for attempt in 1 2 3 4 5; do
-  COMMENTS=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" --paginate)
+  COMMENTS=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" --paginate --slurp)
   IDS=()
   while IFS= read -r line; do [ -n "$line" ] && IDS+=("$line"); done <<< "$(marker_ids "$COMMENTS")"
   COMMENT_ID="${IDS[0]:-}"
@@ -93,7 +103,7 @@ for attempt in 1 2 3 4 5; do
   fi
 
   if [ -n "$COMMENT_ID" ]; then
-    CURRENT_BODY=$(jq -r --arg id "$COMMENT_ID" '.[] | select(.id==($id|tonumber)) | .body' <<< "$COMMENTS")
+    CURRENT_BODY=$(jq -r --arg id "$COMMENT_ID" '.[] | select(.id==($id|tonumber)) | .body' <<< "$(flatten_pages "$COMMENTS")")
   else
     CURRENT_BODY=""
   fi
@@ -118,13 +128,20 @@ for attempt in 1 2 3 4 5; do
   # Re-read and confirm our section landed on the surviving comment, and that no
   # concurrent writer left a duplicate behind.
   sleep 1
-  RECHECK=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" --paginate)
+  RECHECK=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" --paginate --slurp)
   RIDS=()
   while IFS= read -r line; do [ -n "$line" ] && RIDS+=("$line"); done <<< "$(marker_ids "$RECHECK")"
-  LIVE_BODY=$(jq -r --arg id "$COMMENT_ID" '.[] | select(.id==($id|tonumber)) | .body' <<< "$RECHECK")
+  LIVE_BODY=$(jq -r --arg id "$COMMENT_ID" '.[] | select(.id==($id|tonumber)) | .body' <<< "$(flatten_pages "$RECHECK")")
 
-  if [ "${#RIDS[@]}" -le 1 ] && [ "$(extract_section "$LIVE_BODY")" = "$WANT" ]; then
+  # Success means our section landed on the comment we wrote — nothing more.
+  # Duplicate collapsing is best-effort cleanup (the DELETE above may lack
+  # permission); a duplicate we could not remove must not block reporting that
+  # already succeeded, or every run would burn all 5 attempts and warn forever.
+  if [ "$(extract_section "$LIVE_BODY")" = "$WANT" ]; then
     echo "CI status '$SECTION' section updated (attempt $attempt)."
+    if [ "${#RIDS[@]}" -gt 1 ]; then
+      echo "A duplicate CI status comment remains (could not be deleted); it will be retried next run."
+    fi
     exit 0
   fi
 

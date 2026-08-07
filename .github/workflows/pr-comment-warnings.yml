@@ -48,10 +48,11 @@ jobs:
 
       - name: Checkout CI status action
         if: steps.pr.outputs.pr-number != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           sparse-checkout: .github/actions/ci-status-comment
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Reset lint section to pending
         if: steps.pr.outputs.pr-number != ''
@@ -175,7 +176,7 @@ jobs:
                 echo "<details><summary>Warnings/errors in files changed by this PR ($total)</summary>"
                 echo ""
                 echo '```'
-                jq -r '.pr_findings[] | "\(.file):\(.line)  \(.rule)  \(.message | gsub("[\r\n]"; " "))"' warning-result.json
+                jq -r '.pr_findings[] | "\(.file | gsub("[\r\n]"; " ")):\(.line | tostring | gsub("[\r\n]"; " "))  \(.rule | gsub("[\r\n]"; " "))  \(.message | gsub("[\r\n]"; " "))"' warning-result.json
                 shown=$(jq -r '.pr_findings | length' warning-result.json)
                 if [ "$total" -gt "$shown" ]; then
                   echo ""
@@ -194,7 +195,7 @@ jobs:
                   echo "<details><summary>No warnings in files changed by this PR — showing general ones you can remove to unblock ($dcount of $COUNT)</summary>"
                   echo ""
                   echo '```'
-                  jq -r '.droppable[] | "\(.file):\(.line)  \(.rule)  \(.message | gsub("[\r\n]"; " "))"' warning-result.json
+                  jq -r '.droppable[] | "\(.file | gsub("[\r\n]"; " ")):\(.line | tostring | gsub("[\r\n]"; " "))  \(.rule | gsub("[\r\n]"; " "))  \(.message | gsub("[\r\n]"; " "))"' warning-result.json
                   echo '```'
                   echo ""
                   echo "</details>"
@@ -215,14 +216,17 @@ jobs:
 
       - name: Checkout CI status action
         if: steps.pr.outputs.pr-number != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           sparse-checkout: .github/actions/ci-status-comment
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+          # Own path so checkout's workspace-clean can't wipe the already-downloaded warning-result.json.
+          path: ci-status-action
 
       - name: Update lint section
         if: steps.pr.outputs.pr-number != ''
-        uses: ./.github/actions/ci-status-comment
+        uses: ./ci-status-action/.github/actions/ci-status-comment
         with:
           pr-number: ${{ steps.pr.outputs.pr-number }}
           section: lint
