@@ -1,0 +1,114 @@
+---
+name: InWorld Suite
+# STUB for the ci-status-comment lab. Stands in for decentraland's real InWorld
+# suite (explorer-automation's run-inworld-suite.yml). It validates the fold in
+# explorer-automation#86: instead of posting its own `## InWorld suite` comment,
+# the suite writes an `inworld` section into unity-explorer's unified CI status
+# comment, then retires any leftover standalone comment.
+#
+# It exercises the external-caller contract of upsert-ci-status.sh directly (not
+# via the composite action): NO_CREATE=1 (never seed the comment — the build
+# workflow owns creation) + SECTION_BODY_FILE. `inworld` is on-demand: it is not
+# part of the skeleton, so this is also where the "append a missing fence to an
+# existing comment" path is exercised end-to-end.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout (for the upsert script)
+        uses: actions/checkout@v4
+
+      # A leftover from a hypothetical earlier run, so the fold's retirement step
+      # below has something to retire. Authored by github-actions[bot] (github.token),
+      # carries the `## InWorld suite` header, and — crucially — no ci-status marker,
+      # so the retirement filter matches it but never the unified comment.
+      - name: Seed a leftover standalone comment
+        if: env.PR_NUMBER != ''
+        run: |
+          set -euo pipefail
+          printf '## InWorld suite\n\n❌ leftover from a previous run — should be retired by the fold.\n' > leftover.md
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            -F body=@leftover.md >/dev/null
+          echo "Seeded a standalone leftover comment."
+
+      # The unified comment is created by the build workflow (comment-pending, on
+      # the build stub's 'requested' event). NO_CREATE means the fold waits for
+      # it; poll here so the validation is deterministic rather than leaning on
+      # the script's short internal retry.
+      - name: Wait for the unified comment to be seeded
+        if: env.PR_NUMBER != ''
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 48); do
+            if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                 --jq '.[].body' | grep -q '<!-- ci-status -->'; then
+              echo "Unified comment present after ${i} checks."
+              exit 0
+            fi
+            echo "Waiting for the unified comment… (${i})"
+            sleep 5
+          done
+          echo "::warning::Unified comment never appeared; the fold will hit its NO_CREATE fallback."
+
+      - name: Build the InWorld section body
+        run: |
+          set -euo pipefail
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BADGE="https://img.shields.io/badge/InWorld-Passed!-3fb950?logo=unity&logoColor=white&style=for-the-badge"
+          # No `## InWorld suite` header here — that header is the standalone
+          # finder's needle; if it appeared in the section the retirement filter
+          # (and the real fallback finder) would match the unified comment.
+          {
+            echo "[![InWorld]($BADGE)]($RUN_URL)"
+            echo
+            echo "✅ **InWorld suite passed** on all 2 legs. _(stubbed lab run)_"
+            echo
+            echo "| | macOS | Windows |"
+            echo "|---|---|---|"
+            echo "| Result | ✅ passed | ✅ passed |"
+            echo "| Tests | 42 / 42 | 42 / 42 |"
+            echo "| Duration | 12m3s | 15m40s |"
+            echo "| Allure | [Open](https://example.com/allure) | [Download](https://example.com/win.zip) |"
+            echo
+            echo "Commit \`deadbeef\` · branch \`lab\` · [run #${GITHUB_RUN_ID}](${RUN_URL})"
+          } > section-body.md
+
+      - name: Fold results into the unified CI status comment
+        id: section
+        if: env.PR_NUMBER != ''
+        run: |
+          set -euo pipefail
+          WRITTEN=false
+          if REPO="$GITHUB_REPOSITORY" SECTION=inworld NO_CREATE=1 \
+             SECTION_BODY= SECTION_BODY_FILE=section-body.md \
+             bash .github/actions/ci-status-comment/upsert-ci-status.sh; then
+            WRITTEN=true
+            # Retire any standalone `## InWorld suite` comment (the leftover
+            # above), best-effort — a failed stub edit must not fail a suite
+            # whose result already landed in the section.
+            (gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]"
+                                 and (.body | contains("## InWorld suite"))
+                                 and ((.body | contains("<!-- ci-status -->")) | not)) | .id' \
+              || true) \
+            | while read -r id; do
+                echo "Retiring standalone InWorld comment ${id}."
+                gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" \
+                  -f body="_The InWorld suite now reports in the unified **CI Status** comment on this PR._" \
+                  >/dev/null || true
+              done
+          else
+            echo "::notice::CI status section not written; the real suite would post a standalone comment here."
+          fi
+          echo "written=$WRITTEN" >> "$GITHUB_OUTPUT"

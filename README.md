@@ -36,3 +36,22 @@ since two writers seed the comment at once). ~30s later both finish
 - **Tests** → Failed (EditMode all pass, PlayMode 2 failures, with a details list)
 
 Expected end state: **one** comment with all three sections.
+
+## InWorld section (added for #9713)
+
+`inworld-suite.yml` is a fourth stub that validates
+[`explorer-automation#86`](https://github.com/decentraland/explorer-automation/pull/86):
+the InWorld suite no longer posts its own comment. Instead it runs
+`upsert-ci-status.sh` **directly** (the external-caller contract: `NO_CREATE=1` +
+`SECTION_BODY_FILE`, `SECTION=inworld`) to fold its result into an `inworld`
+section of the unified comment, then retires any leftover standalone
+`## InWorld suite` comment.
+
+`inworld` is **on-demand** — it is *not* seeded into the skeleton (the real suite
+only runs on release/hotfix PRs into main), so this stub also exercises the
+"append a missing section fence to an existing comment" path, and the seed-path
+fix that stops a non-skeleton section from wedging the survive check.
+
+The stub seeds a fake leftover standalone comment first, so the run should end
+with **one** unified comment (build/lint/tests/inworld) plus that leftover
+edited down to a one-line pointer.
