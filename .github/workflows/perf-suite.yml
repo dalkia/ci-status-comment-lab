@@ -1,0 +1,104 @@
+---
+name: Bare-metal Benchmark
+# STUB for the ci-status-comment lab. Stands in for decentraland/performance-testing's
+# ProduceSummary.cs fold (performance-testing#19): instead of a standalone
+# perf-test-summary comment, it writes the benchmark report into the
+# `performance` section of unity-explorer's unified CI status comment, with a
+# badge whose colour is driven by the report's own "Overall" headline verdict.
+#
+# It exercises the external-caller contract of upsert-ci-status.sh directly:
+# NO_CREATE=1 + SECTION_BODY_FILE, SECTION=performance. Flip BADGE_STATE below
+# to see each of the four badges (no-regressions | regression | partial | failed).
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # no-regressions | regression | partial | failed — the demo verdict.
+  BADGE_STATE: regression
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout (for the upsert script)
+        uses: actions/checkout@v4
+
+      # The build workflow seeds the unified comment (which already contains a
+      # `performance` section in its skeleton); poll for it so the fold is
+      # deterministic rather than leaning on the script's short internal retry.
+      - name: Wait for the unified comment to be seeded
+        if: env.PR_NUMBER != ''
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 48); do
+            if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                 --jq '.[].body' | grep -q '<!-- ci-status -->'; then
+              echo "Unified comment present after ${i} checks."; exit 0
+            fi
+            echo "Waiting for the unified comment… (${i})"; sleep 5
+          done
+          echo "::warning::Unified comment never appeared; the fold will hit its NO_CREATE fallback."
+
+      - name: Build the performance section body
+        run: |
+          set -euo pipefail
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BADGE_STYLE="?logo=speedtest&logoColor=white&style=for-the-badge"
+
+          # Badge sourced from the report's Overall headline, exactly as
+          # ProduceSummary.cs does — the badge can never contradict the report.
+          case "$BADGE_STATE" in
+            failed)   BADGE="https://img.shields.io/badge/Performance-Failed!-ff0000${BADGE_STYLE}"; HEADLINE="**Overall: 🔴 no tests produced results**"; OPEN="<details open>" ;;
+            regression) BADGE="https://img.shields.io/badge/Performance-Regression-ff0000${BADGE_STYLE}"; HEADLINE="**Overall: 🔴 CPU average regressed on amd-ryzen-3, apple-m1**"; OPEN="<details open>" ;;
+            partial)  BADGE="https://img.shields.io/badge/Performance-Partial-d29922${BADGE_STYLE}"; HEADLINE="**Overall: ✅ no significant changes** _(intel-i3 failed to produce results)_"; OPEN="<details>" ;;
+            *)        BADGE="https://img.shields.io/badge/Performance-No%20regressions-3fb950${BADGE_STYLE}"; HEADLINE="**Overall: ✅ no significant changes**"; OPEN="<details>" ;;
+          esac
+
+          {
+            echo "[![Performance]($BADGE)]($RUN_URL)"
+            echo
+            echo "🏁 Bare-metal benchmark finished — run [#${GITHUB_RUN_ID}]($RUN_URL). _(stubbed lab run)_"
+            echo
+            echo "$OPEN<summary>Full report</summary>"
+            echo
+            echo "$HEADLINE"
+            echo
+            echo "### amd-ryzen-3"
+            echo "| Metric | Baseline | Change | Δ | Result |"
+            echo "| --- | ---: | ---: | ---: | :--- |"
+            echo "| Samples | 512 (×3) | 498 (×3) | | |"
+            echo "| CPU average | 12.1 ms (11.8–12.4) | 13.4 ms (13.1–13.7) | 1.3 ms | 🔴 11% slower |"
+            echo "| GPU average | 8.0 ms (7.9–8.2) | 8.1 ms (7.9–8.3) | 0.1 ms | ⚪ within noise |"
+            echo "| Exceptions per run | 0 | 0 | 0 | ⚪ no significant change |"
+            echo
+            echo "### apple-m1"
+            echo "| Metric | Baseline | Change | Δ | Result |"
+            echo "| --- | ---: | ---: | ---: | :--- |"
+            echo "| Samples | 640 (×3) | 631 (×3) | | |"
+            echo "| CPU average | 9.2 ms (9.0–9.4) | 10.1 ms (9.9–10.3) | 0.9 ms | 🔴 10% slower |"
+            echo "| GPU average | 6.1 ms (6.0–6.2) | 6.0 ms (5.9–6.1) | -0.1 ms | ⚪ within noise |"
+            echo "| Exceptions per run | 0 | 0 | 0 | ⚪ no significant change |"
+            echo
+            echo "</details>"
+          } > section-body.md
+
+      - name: Fold into the unified CI status comment
+        id: section
+        if: env.PR_NUMBER != ''
+        run: |
+          set -euo pipefail
+          if REPO="$GITHUB_REPOSITORY" SECTION=performance NO_CREATE=1 \
+             SECTION_BODY= SECTION_BODY_FILE=section-body.md \
+             bash .github/actions/ci-status-comment/upsert-ci-status.sh; then
+            echo "Performance section folded in."
+          else
+            echo "::notice::CI status section not written; the real benchmark would post a standalone comment here."
+          fi
