@@ -138,6 +138,10 @@ jobs:
           # past the first page. Not filtered on success: a run still going, a
           # run that failed and no run at all are three different instructions
           # to whoever reads the section, and only one of them is "rebuild".
+          # `action_required` runs are dropped everywhere below: a repository
+          # that holds bot-opened PRs for approval creates one per workflow the
+          # moment the PR opens, already "completed", with no jobs — newer than
+          # dev's real run and saying nothing about the commit.
           #
           # BUILD_STATE is read by the gate step below:
           #   reused    a green run's links were written; the gate is dispatched
@@ -149,7 +153,7 @@ jobs:
           #   unknown   the API did not answer
           BUILD_LISTED=1
           RUNS_JSON=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-cloud-build.yml/runs?head_sha=${HEAD_SHA}&per_page=20" \
-            --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "push")]') || BUILD_LISTED=0
+            --jq '[.workflow_runs[] | select((.event == "pull_request" or .event == "push") and .conclusion != "action_required")]') || BUILD_LISTED=0
 
           # A green run wins over a newer cancelled or failed one — its
           # artifacts exist either way. Otherwise the newest run's fate decides.
@@ -280,8 +284,10 @@ jobs:
           TEST_BRANCH=""
           TEST_JOBS=""
           TEST_STATE=unknown
+          # A finished run over one still going, the newest of each: the cut
+          # wants the most that is known about the commit.
           if TEST_RUN=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-test.yml/runs?head_sha=${HEAD_SHA}&per_page=20" \
-            --jq '[.workflow_runs[] | select(.event == "push" or .event == "pull_request")] | .[0]'); then
+            --jq '[.workflow_runs[] | select((.event == "push" or .event == "pull_request") and .conclusion != "action_required")] | first(.[] | select(.status == "completed")) // .[0]'); then
             if [ -z "$TEST_RUN" ] || [ "$TEST_RUN" = "null" ]; then
               # unity-test.yml (test.yml upstream) is path-filtered on pushes to dev, so a commit that
               # touches nothing the suite watches starts no run at all — an
@@ -473,7 +479,7 @@ jobs:
           LISTED=0
           UNEXAMINED=0
           if RUN_IDS=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-cloud-build.yml/runs?head_sha=${HEAD_SHA}&per_page=50" \
-            --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "push") | .id]'); then
+            --jq '[.workflow_runs[] | select((.event == "pull_request" or .event == "push") and .conclusion != "action_required") | .id]'); then
             LISTED=1
           else
             RUN_IDS=''
