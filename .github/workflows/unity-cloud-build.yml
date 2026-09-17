@@ -30,29 +30,31 @@ permissions:
 
 jobs:
   Build:
+    # Named like the real matrix legs: the cut workflow's gate step asks the
+    # jobs API for a green "Build (macos" and "Build (windows64" before it
+    # dispatches the InWorld gate.
+    name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macos, windows64]
     steps:
       - name: Simulate a build
         env:
           MESSAGE: ${{ github.event.head_commit.message || '' }}
+          TARGET: ${{ matrix.target }}
         run: |
           SECONDS_TO_SLEEP=30
           case "$MESSAGE" in *"[slow]"*) SECONDS_TO_SLEEP=150 ;; esac
-          echo "Pretending to build for ~${SECONDS_TO_SLEEP}s…"
+          echo "Pretending to build ${TARGET} for ~${SECONDS_TO_SLEEP}s…"
           sleep "$SECONDS_TO_SLEEP"
           case "$MESSAGE" in *"[fail-build]"*) echo "::error::[fail-build] marker — failing as a real build would."; exit 1 ;; esac
           mkdir -p out
-          echo "dummy build output" > out/Decentraland_windows64.txt
-          echo "dummy build output" > out/Decentraland_macos.txt
-          (cd out && zip -q Decentraland_windows64.zip Decentraland_windows64.txt)
-          (cd out && zip -q Decentraland_macos.zip Decentraland_macos.txt)
-      - name: Upload dummy windows artifact
+          echo "dummy build output" > "out/Decentraland_${TARGET}.txt"
+          (cd out && zip -q "Decentraland_${TARGET}.zip" "Decentraland_${TARGET}.txt")
+      - name: Upload dummy artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Decentraland_windows64
-          path: out/Decentraland_windows64.zip
-      - name: Upload dummy macos artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Decentraland_macos
-          path: out/Decentraland_macos.zip
+          name: Decentraland_${{ matrix.target }}
+          path: out/Decentraland_${{ matrix.target }}.zip
