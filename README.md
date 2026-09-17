@@ -55,3 +55,40 @@ fix that stops a non-skeleton section from wedging the survive check.
 The stub seeds a fake leftover standalone comment first, so the run should end
 with **one** unified comment (build/lint/tests/inworld) plus that leftover
 edited down to a one-line pointer.
+
+## Release-cut sections (added for #10139)
+
+`release-cut.yml` is a fifth stub, standing in for unity-explorer's
+`create-release-branch.yml`. It validates
+[`unity-explorer#10139`](https://github.com/decentraland/unity-explorer/pull/10139):
+a release PR is opened by `GITHUB_TOKEN`, so **no workflow ever runs on it** and
+every section of its unified comment would otherwise sit on the skeleton's
+"Waiting…" placeholder for the life of the release. The cut step instead fills
+build, lint, tests and performance from the runs of the commit it cut from.
+
+The step is copied verbatim from the PR apart from the two producer workflow
+filenames and the S3 prefix; the header comment lists the substitutions.
+
+Because the lab has no `dev` line, the workflow takes the commit to cut from as
+an input rather than reading a branch tip. Use the head SHA of a PR that has
+already run both stubs — the same situation the real workflow is in.
+
+### How to run
+
+1. Open a PR that edits `trigger.txt` and let both stubs finish. `Test (playmode)`
+   fails on purpose, so this SHA has a green build, a green `Lint` and one red
+   test suite.
+2. Run **Release Cut** from the Actions tab with that PR's head SHA.
+
+It cuts `release/<timestamp>`, opens a PR into `main` with `GITHUB_TOKEN`, and
+fills the sections. Expected end state on the release PR: **one** comment, with
+
+- **Build** → `Success!`, per-platform rows resolved from the build run's artifacts
+- **Lint** → `Passed!`, off the `Lint` job's conclusion
+- **Tests** → `Failed!`, naming editmode `success` / playmode `failure`
+- **Performance** → `Not dispatched`, explaining that the benchmark rides a build
+  of the PR itself
+- **Automation** → the untouched `On demand` placeholder from the skeleton
+
+and **no other workflow run on that PR at all** — which is the premise the whole
+step rests on, and the one thing a local dry run cannot check.
