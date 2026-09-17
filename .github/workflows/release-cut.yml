@@ -9,26 +9,39 @@ name: Release Cut
 #   test.yml             -> unity-test.yml          (the lab's test stub)
 #   vars.EXPLORER_…      -> a literal fake S3 prefix
 #
-# The real workflow cuts from dev's tip, which a push already built and tested.
-# The lab has no dev line, so `sha` names the commit to cut from — use the head
-# of a PR that has run both stubs, which is the same situation: a commit whose
-# build and test runs already exist and are reachable by head_sha.
+# Two things the real workflow does are NOT reproduced here, and neither is
+# what the step under test does:
+#
+#   * It cuts release/<date> from dev's tip. The lab has no dev line, so `sha`
+#     names the commit to read runs for — use the head of a PR that has run
+#     both stubs, which is the same situation: a commit whose build and test
+#     runs already exist and are reachable by head_sha.
+#   * It opens the release PR with GITHUB_TOKEN, which starts no workflow runs.
+#     This repo has "Allow GitHub Actions to create and approve pull requests"
+#     off (unity-explorer has it on), so `pr` names an existing PR to write the
+#     comment on instead. BRANCH_NAME is set from that PR's head ref, which is
+#     all the copied step reads it for — so the step itself stays untouched.
 #
 # What this validates that a local dry run cannot: the four section bodies
-# actually surviving upsert-ci-status.sh (skeleton seeding on a PR with no
-# comment yet, the marker-strip filter, the survive check) and rendering as ONE
-# comment — and that a PR opened by GITHUB_TOKEN really does start no workflows,
-# which is the whole premise of the step.
+# actually surviving upsert-ci-status.sh and rendering as ONE comment — both
+# when the PR has no CI status comment yet (the step seeds the skeleton) and
+# when the normal comment workflows have already written their own sections
+# (the step must replace them in place, which is the stale-links bug #10139 is
+# about, and must not spawn a second comment).
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: Commit to cut the release from (head of a PR that ran both stubs).
+        description: Commit to read the build and test runs of (head of a PR that ran both stubs).
+        required: true
+        type: string
+      pr:
+        description: PR number to write the unified CI status comment on.
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   actions: read
 
@@ -42,31 +55,18 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
 
-      - name: Get release date and branch name
-        run: |
-          RELEASE_DATE=$(date +'%Y-%m-%d-%H%M%S')
-          echo "RELEASE_DATE=$RELEASE_DATE" >> $GITHUB_ENV
-          echo "BRANCH_NAME=release/$RELEASE_DATE" >> $GITHUB_ENV
-
-      - name: Create or update branch
-        run: |
-          git checkout -B $BRANCH_NAME
-          git push --force --set-upstream origin $BRANCH_NAME
-
-      - name: Create pull request using GitHub CLI
+      # The real workflow sets BRANCH_NAME to the release branch it just cut and
+      # opened a PR for; the copied step only ever uses it to look that PR's
+      # number back up. Pointing it at an existing PR's head ref keeps the step
+      # verbatim without this repo needing to let Actions open PRs.
+      - name: Resolve the target PR's head ref
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Opened with GITHUB_TOKEN exactly as the real workflow does, so this
-          # PR starts no workflow runs and its CI status comment has no other
-          # writer — the condition the step below exists to handle.
-          if ! gh pr view "$BRANCH_NAME" --json number &>/dev/null; then
-            gh pr create \
-              --base main \
-              --head "$BRANCH_NAME" \
-              --title "release: $RELEASE_DATE" \
-              --body ":rocket: Automated release PR (lab)"
-          fi
+          set -euo pipefail
+          BRANCH_NAME=$(gh pr view "${{ inputs.pr }}" --json headRefName --jq '.headRefName')
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "Writing the CI status comment of PR #${{ inputs.pr }} ($BRANCH_NAME)."
 
       - name: Fill the CI status comment from dev's runs of this commit
         env:

@@ -76,19 +76,25 @@ already run both stubs — the same situation the real workflow is in.
 ### How to run
 
 1. Open a PR that edits `trigger.txt` and let both stubs finish. `Test (playmode)`
-   fails on purpose, so this SHA has a green build, a green `Lint` and one red
-   test suite.
-2. Run **Release Cut** from the Actions tab with that PR's head SHA.
+   fails on purpose, so this SHA has a green build, a green `Lint`, a red
+   playmode suite and an editmode suite the matrix cancelled with it.
+2. Run **Release Cut** from the Actions tab with that PR's head SHA and number.
 
-It cuts `release/<timestamp>`, opens a PR into `main` with `GITHUB_TOKEN`, and
-fills the sections. Expected end state on the release PR: **one** comment, with
+Run it twice to cover both entry states:
+
+- **delete the unified comment first** → the step is the only writer, so it seeds
+  the skeleton and fills four of its six sections
+- **leave the comment in place** → the step must overwrite the sections the
+  normal workflows wrote, in place, without spawning a second comment. This is
+  the property #10139 is actually about: the old code posted a standalone
+  comment that nothing could ever update, so testers kept installing the cut
+  commit's build after newer commits had landed.
+
+Expected sections either way:
 
 - **Build** → `Success!`, per-platform rows resolved from the build run's artifacts
 - **Lint** → `Passed!`, off the `Lint` job's conclusion
-- **Tests** → `Failed!`, naming editmode `success` / playmode `failure`
+- **Tests** → `Failed!`, naming editmode `cancelled` / playmode `failure`
 - **Performance** → `Not dispatched`, explaining that the benchmark rides a build
   of the PR itself
 - **Automation** → the untouched `On demand` placeholder from the skeleton
-
-and **no other workflow run on that PR at all** — which is the premise the whole
-step rests on, and the one thing a local dry run cannot check.
