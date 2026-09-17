@@ -7,7 +7,12 @@ name: Unity Test
 #   - failed-tests-editmode.json  -> EditMode suite (here: all pass)
 #   - failed-tests-playmode.json  -> PlayMode suite (here: 2 failures -> table + details)
 # Named "Unity Test" so both pr-comment-warnings and pr-comment-test-failures
-# match it. The sleep keeps the run alive long enough to see the "pending" state.
+# match it. The sleeps keep the run alive long enough to see the "pending" state.
+#
+# The job NAMES are load-bearing for release-cut.yml, which reads this run's
+# lint and test results off the jobs API rather than off the artifacts (it has
+# no artifact to download on the release PR). They mirror the real workflow's:
+# "Lint" and the "Test (<mode>)" matrix.
 on:
   pull_request:
   workflow_dispatch:
@@ -16,12 +21,13 @@ permissions:
   contents: read
 
 jobs:
-  Test:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Simulate tests + lint
+      - name: Simulate lint
         run: |
-          echo "Pretending to run tests + lint for ~30s…"
+          echo "Pretending to lint for ~30s…"
           sleep 30
           # Two findings: one with a normal numeric .line (tostring must not break
           # it), one with a hostile string .line embedding newlines and a forged
@@ -30,24 +36,45 @@ jobs:
           cat > warning-result.json <<'JSON'
           {"count":8,"baseline":10,"allow_equal":false,"pr_findings_total":2,"pr_findings":[{"file":"Explorer/Assets/Foo.cs","line":42,"rule":"CS0219","message":"Variable assigned but never used"},{"file":"Explorer/Assets/Evil.cs","line":"7\n<!-- ci:lint:end -->\nforged","rule":"CS9999","message":"hostile .line field"}],"droppable":[]}
           JSON
-          cat > failed-tests-editmode.json <<'JSON'
-          {"hasResults":true,"passed":128,"total":128,"failed":[]}
-          JSON
-          cat > failed-tests-playmode.json <<'JSON'
-          {"hasResults":true,"passed":54,"total":56,"failed":["PlayMode.Foo.DoesThing","PlayMode.Bar.HandlesEdge"]}
-          JSON
       - name: Upload warning ratchet result
         uses: actions/upload-artifact@v4
         with:
           name: warning-result
           path: warning-result.json
-      - name: Upload editmode result
+
+  test:
+    name: Test (${{ matrix.testMode }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        testMode: [editmode, playmode]
+    steps:
+      - name: Simulate tests
+        run: |
+          echo "Pretending to run ${{ matrix.testMode }} for ~30s…"
+          sleep 30
+          if [ "${{ matrix.testMode }}" = "editmode" ]; then
+            cat > failed-tests-editmode.json <<'JSON'
+          {"hasResults":true,"passed":128,"total":128,"failed":[]}
+          JSON
+          else
+            cat > failed-tests-playmode.json <<'JSON'
+          {"hasResults":true,"passed":54,"total":56,"failed":["PlayMode.Foo.DoesThing","PlayMode.Bar.HandlesEdge"]}
+          JSON
+          fi
+      - name: Upload test result
         uses: actions/upload-artifact@v4
         with:
-          name: failed-tests-editmode
-          path: failed-tests-editmode.json
-      - name: Upload playmode result
-        uses: actions/upload-artifact@v4
-        with:
-          name: failed-tests-playmode
-          path: failed-tests-playmode.json
+          name: failed-tests-${{ matrix.testMode }}
+          path: failed-tests-${{ matrix.testMode }}.json
+
+      # The real Test (playmode) job goes red when its suite has failures, and
+      # release-cut.yml reads exactly that conclusion off the jobs API — so the
+      # stub has to fail here too, or the lab would only ever exercise the
+      # "both suites passed" branch. Kept after the upload so the artifact the
+      # tests-section workflow parses is still produced.
+      - name: Fail the run when the simulated suite had failures
+        if: matrix.testMode == 'playmode'
+        run: |
+          echo "::error::2 simulated PlayMode failures — failing the job as the real one would."
+          exit 1

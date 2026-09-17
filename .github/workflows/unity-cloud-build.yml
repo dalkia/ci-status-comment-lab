@@ -2,8 +2,10 @@
 name: Unity Cloud Build
 # STUB producer for the ci-status-comment lab. Stands in for decentraland's real
 # Unity Cloud Build workflow. It only needs to (a) be named "Unity Cloud Build"
-# so the build comment workflow's workflow_run trigger matches, and (b) upload a
-# Decentraland_* artifact so its "did the build actually run?" check passes.
+# so the build comment workflow's workflow_run trigger matches, and (b) upload
+# Decentraland_* artifacts so its "did the build actually run?" check passes.
+# Both platform artifacts exist so release-cut.yml's per-platform rows resolve a
+# download id for each; drop one to exercise the row that falls back to S3 only.
 # The sleep keeps the run alive long enough to see the "pending" state.
 on:
   pull_request:
@@ -22,9 +24,16 @@ jobs:
           sleep 30
           mkdir -p out
           echo "dummy build output" > out/Decentraland_windows64.txt
+          echo "dummy build output" > out/Decentraland_macos.txt
           (cd out && zip -q Decentraland_windows64.zip Decentraland_windows64.txt)
-      - name: Upload dummy build artifact
+          (cd out && zip -q Decentraland_macos.zip Decentraland_macos.txt)
+      - name: Upload dummy windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: Decentraland_windows64
           path: out/Decentraland_windows64.zip
+      - name: Upload dummy macos artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Decentraland_macos
+          path: out/Decentraland_macos.zip
