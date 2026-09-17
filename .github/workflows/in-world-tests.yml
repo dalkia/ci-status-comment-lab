@@ -1,0 +1,31 @@
+---
+name: In-World Tests
+# STUB gate for the ci-status-comment lab (unity-explorer#10139). Stands in for
+# the real in-world-tests.yml only as far as the release-cut flow needs: a
+# workflow of this filename that a dispatch can start against a release branch,
+# whose runs are listed by head_sha (release-gate checks for one in flight or
+# green before dispatching another), and that also starts on PRs into main the
+# way the real one does. Runs nothing.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Wait for the build
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Stub gate dispatched by ${{ github.event_name }} against ${{ github.ref_name }} (${{ github.sha }})."
+          sleep 20
+  result:
+    name: InWorld suite result
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "::notice::Stub InWorld gate passed."

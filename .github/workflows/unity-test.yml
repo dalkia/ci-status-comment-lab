@@ -13,8 +13,16 @@ name: Unity Test
 # lint and test results off the jobs API rather than off the artifacts (it has
 # no artifact to download on the release PR). They mirror the real workflow's:
 # "Lint" and the "Test (<mode>)" matrix.
+#
+# For unity-explorer#10139 it also runs on pushes to dev (the run a release cut
+# reads its lint and test conclusions from) and on the `labeled` PR event; a
+# `[slow]` marker in the dev commit message stretches each job to ~150s so a
+# cut can land while the suite is still running.
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  push:
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
@@ -26,9 +34,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Simulate lint
+        env:
+          MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
-          echo "Pretending to lint for ~30s…"
-          sleep 30
+          SECONDS_TO_SLEEP=30
+          case "$MESSAGE" in *"[slow]"*) SECONDS_TO_SLEEP=150 ;; esac
+          echo "Pretending to lint for ~${SECONDS_TO_SLEEP}s…"
+          sleep "$SECONDS_TO_SLEEP"
           # Two findings: one with a normal numeric .line (tostring must not break
           # it), one with a hostile string .line embedding newlines and a forged
           # section marker (the gsub scrub must collapse it to one line, and the
@@ -50,9 +62,13 @@ jobs:
         testMode: [editmode, playmode]
     steps:
       - name: Simulate tests
+        env:
+          MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
-          echo "Pretending to run ${{ matrix.testMode }} for ~30s…"
-          sleep 30
+          SECONDS_TO_SLEEP=30
+          case "$MESSAGE" in *"[slow]"*) SECONDS_TO_SLEEP=150 ;; esac
+          echo "Pretending to run ${{ matrix.testMode }} for ~${SECONDS_TO_SLEEP}s…"
+          sleep "$SECONDS_TO_SLEEP"
           if [ "${{ matrix.testMode }}" = "editmode" ]; then
             cat > failed-tests-editmode.json <<'JSON'
           {"hasResults":true,"passed":128,"total":128,"failed":[]}

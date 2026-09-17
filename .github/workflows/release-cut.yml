@@ -1,86 +1,99 @@
 ---
-name: Release Cut
-# STUB driver for the ci-status-comment lab. Stands in for decentraland's
-# create-release-branch.yml (unity-explorer#10139), whose "Fill the CI status
-# comment from dev's runs of this commit" step is copied below VERBATIM apart
-# from three substitutions, each forced by the lab:
+# STUB driver for the ci-status-comment lab, standing in for decentraland's
+# create-release-branch.yml (unity-explorer#10139). Generated from that file
+# with these substitutions, and otherwise VERBATIM:
 #
 #   build-unitycloud.yml -> unity-cloud-build.yml   (the lab's build stub)
 #   test.yml             -> unity-test.yml          (the lab's test stub)
 #   vars.EXPLORER_…      -> a literal fake S3 prefix
+#   release/<date>       -> release/<date>-<suffix>  (several cuts per day)
+#   ORG_ACCESS_TOKEN     -> falls back to github.token for the gate dispatch
+#                           only; the force-build label keeps the org token,
+#                           so without that secret the lab exercises the
+#                           "labeling failed" fallback and the label is added
+#                           by hand
+#   permissions:         -> declared explicitly (the lab's default is enough,
+#                           but says what the workflow needs)
 #
-# Two things the real workflow does are NOT reproduced here, and neither is
-# what the step under test does:
-#
-#   * It cuts release/<date> from dev's tip. The lab has no dev line, so `sha`
-#     names the commit to read runs for — use the head of a PR that has run
-#     both stubs, which is the same situation: a commit whose build and test
-#     runs already exist and are reachable by head_sha.
-#   * It opens the release PR with GITHUB_TOKEN, which starts no workflow runs.
-#     This repo has "Allow GitHub Actions to create and approve pull requests"
-#     off (unity-explorer has it on), so `pr` names an existing PR to write the
-#     comment on instead. BRANCH_NAME is set from that PR's head ref, which is
-#     all the copied step reads it for — so the step itself stays untouched.
-#
-# What this validates that a local dry run cannot: the four section bodies
-# actually surviving upsert-ci-status.sh and rendering as ONE comment — both
-# when the PR has no CI status comment yet (the step seeds the skeleton) and
-# when the normal comment workflows have already written their own sections
-# (the step must replace them in place, which is the stale-links bug #10139 is
-# about, and must not spawn a second comment).
+# Everything else the real workflow does happens here too: cut release/* from
+# dev's tip, push it and open the PR with GITHUB_TOKEN (so, as upstream,
+# nothing runs on the PR by itself), seed the CI status comment from dev's
+# runs, and start the InWorld gate stub when a green build exists.
+name: Release Cut
+
 on:
   workflow_dispatch:
     inputs:
-      sha:
-        description: Commit to read the build and test runs of (head of a PR that ran both stubs).
+      suffix:
+        description: Appended to the branch name so one day can hold several cuts.
         required: true
         type: string
-      pr:
-        description: PR number to write the unified CI status comment on.
-        required: true
-        type: string
-
-permissions:
-  contents: read
-  pull-requests: write
-  actions: read
 
 jobs:
-  release-cut:
+  create-release-branch:
     runs-on: ubuntu-latest
-
+    # contents: write — the branch push; pull-requests: write — the PR, its
+    # labels and the CI status comment; actions: write — the gate dispatch.
+    # Upstream leaves this to the repository default.
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    
     steps:
       - name: Check out the code
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.sha }}
-
-      # The real workflow sets BRANCH_NAME to the release branch it just cut and
-      # opened a PR for; the copied step only ever uses it to look that PR's
-      # number back up. Pointing it at an existing PR's head ref keeps the step
-      # verbatim without this repo needing to let Actions open PRs.
-      - name: Resolve the target PR's head ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ref: dev
+          
+      - name: Get release date and branch name
         run: |
-          set -euo pipefail
-          BRANCH_NAME=$(gh pr view "${{ inputs.pr }}" --json headRefName --jq '.headRefName')
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-          echo "Writing the CI status comment of PR #${{ inputs.pr }} ($BRANCH_NAME)."
+          RELEASE_DATE=$(date +'%Y-%m-%d')
+          echo "RELEASE_DATE=$RELEASE_DATE" >> $GITHUB_ENV
+          echo "BRANCH_NAME=release/$RELEASE_DATE-${{ inputs.suffix }}" >> $GITHUB_ENV
 
-      - name: Fill the CI status comment from dev's runs of this commit
+      - name: Create or update branch
+        run: |
+          git checkout -B $BRANCH_NAME
+          git push --force --set-upstream origin $BRANCH_NAME
+
+      - name: Create pull request using GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create PR if it doesn't already exist
+          if ! gh pr view "$BRANCH_NAME" --json number &>/dev/null; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH_NAME" \
+              --title "release: $RELEASE_DATE" \
+              --body ":rocket: Automated release PR"
+          fi
+
+          # Always ensure labels are applied (handles 502 / retry scenarios)
+          gh pr edit "$BRANCH_NAME" --add-label "release,auto-pr"
+
+      - name: Seed the CI status comment from dev's runs of the cut commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # For the force-build label only: a label added by GITHUB_TOKEN raises
+          # an event that starts no run, which would defeat its purpose.
+          ORG_TOKEN: ${{ secrets.ORG_ACCESS_TOKEN }}
           PUBLIC_URL_PREFIX: https://example.invalid/lab-s3
         run: |
           set -euo pipefail
 
-          # Bot-created PRs trigger no workflows, so nothing on this PR ever
-          # writes the unified CI status comment: every section would sit on the
-          # skeleton's "Waiting…" placeholder for the life of the release, each
-          # one describing a run that is never coming. The branch is cut from
-          # dev's tip, whose SHA dev already built, linted and tested — fill the
-          # sections from those runs instead.
+          # The PR above was opened with GITHUB_TOKEN, whose events start no
+          # workflow runs: nothing builds, lints or tests the release branch on
+          # its own, and every section would sit on the skeleton's "Waiting…"
+          # placeholder for good. The branch is cut from dev's tip, whose SHA
+          # dev builds, lints and tests on push — seed the sections from those
+          # runs. Where dev is done, its links are the release's. Where dev is
+          # still running, say so: the pr-comment-* writers resolve a dev run
+          # whose SHA heads an open release PR to that PR
+          # (resolve-comment-pr.sh) and fill the section in when it finishes.
+          # Where dev's build failed, label the PR `force-build` so the release
+          # branch builds itself.
           #
           # Sections rather than a standalone comment: a standalone one has no
           # update path, so the next push to the release branch left the cut
@@ -122,26 +135,86 @@ jobs:
 
           # Scoped to the build workflow file — a repo-wide head_sha listing
           # gets crowded out by bot runs sharing the SHA and the build falls
-          # past the first page.
+          # past the first page. Not filtered on success: a run still going, a
+          # run that failed and no run at all are three different instructions
+          # to whoever reads the section, and only one of them is "rebuild".
+          #
+          # BUILD_STATE is read by the gate step below:
+          #   reused    a green run's links were written; the gate is dispatched
+          #   building  dev is still building; its completion reports into this
+          #             PR (resolve-comment-pr.sh) and dispatches the gate
+          #   forced    dev's build failed; the PR was labeled force-build and
+          #             the release branch's own build dispatches the gate
+          #   notfound  no run exists; the operator has to label force-build
+          #   unknown   the API did not answer
           BUILD_LISTED=1
-          RUN_JSON=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-cloud-build.yml/runs?head_sha=${HEAD_SHA}&status=success&per_page=20" \
-            --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "push")] | .[0]') || BUILD_LISTED=0
+          RUNS_JSON=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-cloud-build.yml/runs?head_sha=${HEAD_SHA}&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "push")]') || BUILD_LISTED=0
+
+          # A green run wins over a newer cancelled or failed one — its
+          # artifacts exist either way. Otherwise the newest run's fate decides.
+          RUN_JSON=""
+          RUN_STATUS=""
+          RUN_CONCLUSION=""
+          if [ "$BUILD_LISTED" = "1" ]; then
+            RUN_JSON=$(jq -c 'first(.[] | select(.status == "completed" and .conclusion == "success")) // .[0] // empty' <<< "$RUNS_JSON")
+          fi
+          if [ -n "$RUN_JSON" ]; then
+            RUN_STATUS=$(jq -r '.status' <<< "$RUN_JSON")
+            RUN_CONCLUSION=$(jq -r '.conclusion // ""' <<< "$RUN_JSON")
+          fi
 
           if [ "$BUILD_LISTED" = "0" ]; then
+            BUILD_STATE=unknown
             {
               echo "![Build](https://img.shields.io/badge/Build-Unknown-lightgrey${BUILD_STYLE})"
               echo ""
               echo "The Actions API did not answer when listing builds of \`${SHORT_SHA}\`, so whether one exists is unknown — this is not evidence that there is none. Read the [build runs](${BUILD_RUNS}) before deciding to rebuild."
             } > build.md
             upsert build build.md
-          elif [ -z "$RUN_JSON" ] || [ "$RUN_JSON" = "null" ]; then
+          elif [ -z "$RUN_JSON" ]; then
+            BUILD_STATE=notfound
             {
               echo "![Build](https://img.shields.io/badge/Build-Not%20Found-yellow${BUILD_STYLE})"
               echo ""
-              echo "No successful Unity Cloud build of \`${SHORT_SHA}\` exists, so there is nothing to link here — see the [build runs](${BUILD_RUNS}). Label this PR \`force-build\` to build the release branch. Do not re-run *Create Release Branch and PR*: it force-pushes \`${BRANCH_NAME}\` from dev's current tip, re-cutting the release from commits nobody reviewed for it."
+              echo "No Unity Cloud build of \`${SHORT_SHA}\` exists, so there is nothing to link here — see the [build runs](${BUILD_RUNS}). Label this PR \`force-build\` to build the release branch. Do not re-run *Create Release Branch and PR*: it force-pushes \`${BRANCH_NAME}\` from dev's current tip, re-cutting the release from commits nobody reviewed for it."
             } > build.md
             upsert build build.md
+          elif [ "$RUN_STATUS" != "completed" ]; then
+            BUILD_STATE=building
+            RUN_ID=$(jq -r '.id' <<< "$RUN_JSON")
+            RUN_BRANCH=$(jq -r '.head_branch' <<< "$RUN_JSON")
+            {
+              echo "[![Build](https://img.shields.io/badge/Build-Building%20on%20dev-yellow${BUILD_STYLE})](${ACTIONS_URL}/runs/${RUN_ID})"
+              echo ""
+              echo "\`${RUN_BRANCH}\` is still building \`${SHORT_SHA}\`, the commit this release was cut from ([logs](${ACTIONS_URL}/runs/${RUN_ID})). Its links land here when it finishes — the release branch was cut from it, so its artifacts are the release's. If it fails, this PR is labeled \`force-build\` and the release branch builds itself."
+            } > build.md
+            upsert build build.md
+          elif [ "$RUN_CONCLUSION" != "success" ]; then
+            RUN_ID=$(jq -r '.id' <<< "$RUN_JSON")
+            RUN_BRANCH=$(jq -r '.head_branch' <<< "$RUN_JSON")
+            # Written before the label goes on: the labeled event starts a build
+            # whose own writers reset this section, and they have to land after.
+            {
+              echo "[![Build](https://img.shields.io/badge/Build-Building%20release%20branch-yellow${BUILD_STYLE})](${ACTIONS_URL}/runs/${RUN_ID})"
+              echo ""
+              echo "The \`${RUN_BRANCH}\` build of \`${SHORT_SHA}\`, the commit this release was cut from, ended \`${RUN_CONCLUSION}\` ([logs](${ACTIONS_URL}/runs/${RUN_ID})), so there is nothing to reuse. This PR was labeled \`force-build\`; the release branch is building itself and its links land here."
+            } > build.md
+            upsert build build.md
+            if GH_TOKEN="$ORG_TOKEN" gh pr edit "$BRANCH_NAME" --add-label force-build; then
+              BUILD_STATE=forced
+            else
+              BUILD_STATE=notfound
+              echo "::error::Could not add force-build to ${BRANCH_NAME}'s PR (ORG_ACCESS_TOKEN lacks the permission, or the API did not answer); label it by hand to build the release branch."
+              {
+                echo "![Build](https://img.shields.io/badge/Build-Not%20Found-yellow${BUILD_STYLE})"
+                echo ""
+                echo "The \`${RUN_BRANCH}\` build of \`${SHORT_SHA}\`, the commit this release was cut from, ended \`${RUN_CONCLUSION}\` ([logs](${ACTIONS_URL}/runs/${RUN_ID})), so there is nothing to reuse — and labeling this PR \`force-build\` failed. Label it by hand to build the release branch. Do not re-run *Create Release Branch and PR*: it force-pushes \`${BRANCH_NAME}\` from dev's current tip, re-cutting the release from commits nobody reviewed for it."
+              } > build.md
+              upsert build build.md
+            fi
           else
+            BUILD_STATE=reused
             RUN_ID=$(jq -r '.id' <<< "$RUN_JSON")
             RUN_NUMBER=$(jq -r '.run_number' <<< "$RUN_JSON")
             SUITE_ID=$(jq -r '.check_suite_id' <<< "$RUN_JSON")
@@ -189,15 +262,20 @@ jobs:
             } > build.md
             upsert build build.md
           fi
+          echo "BUILD_STATE=$BUILD_STATE" >> "$GITHUB_ENV"
 
           # dev's "Unity Test" run for the same SHA carries the only lint and
-          # test evidence this release will ever have: the PR's own events
-          # start nothing, and nothing but a force-build label will change that.
+          # test evidence this release has at the cut: the PR's own events
+          # start nothing, and only a push to the branch or a force-build label
+          # changes that.
           #
-          # Three outcomes, kept apart for the same reason the InWorld gate
-          # below keeps LISTED apart from UNEXAMINED: "the suite did not run"
-          # and "the API would not say" are opposite instructions to whoever
-          # reads the section, and only one of them is about this release.
+          # Four outcomes, kept apart for the same reason the InWorld gate
+          # below keeps LISTED apart from UNEXAMINED: "the suite did not run",
+          # "the suite is still running" and "the API would not say" are three
+          # different instructions to whoever reads the section, and only the
+          # first is about this release. A running suite's jobs have no
+          # conclusion yet, which read as "never created" would print "no C#
+          # files changed" over a lint that is halfway through.
           TEST_RUN_URL=""
           TEST_BRANCH=""
           TEST_JOBS=""
@@ -205,7 +283,7 @@ jobs:
           if TEST_RUN=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-test.yml/runs?head_sha=${HEAD_SHA}&per_page=20" \
             --jq '[.workflow_runs[] | select(.event == "push" or .event == "pull_request")] | .[0]'); then
             if [ -z "$TEST_RUN" ] || [ "$TEST_RUN" = "null" ]; then
-              # test.yml is path-filtered on pushes to dev, so a commit that
+              # unity-test.yml (test.yml upstream) is path-filtered on pushes to dev, so a commit that
               # touches nothing the suite watches starts no run at all — an
               # absence the API is certain about, not one it failed to report.
               TEST_STATE=norun
@@ -216,7 +294,9 @@ jobs:
               # pull_request runs too, so any PR whose head is the cut commit
               # can be the run that answers here.
               TEST_BRANCH=$(jq -r '.head_branch' <<< "$TEST_RUN")
-              if TEST_JOBS=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/runs/${TEST_RUN_ID}/jobs?per_page=100"); then
+              if [ "$(jq -r '.status' <<< "$TEST_RUN")" != "completed" ]; then
+                TEST_STATE=running
+              elif TEST_JOBS=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/runs/${TEST_RUN_ID}/jobs?per_page=100"); then
                 TEST_STATE=ok
               fi
             fi
@@ -231,7 +311,7 @@ jobs:
           # Every reused section says so, and says it will not update: read
           # without that line a green badge on a release PR looks like the PR's
           # own result, and the first push to the branch silently makes it one.
-          REUSED="<sub>Reused from the [\`Unity Test\` run](${TEST_RUN_URL}) of \`${SHORT_SHA}\` on \`${TEST_BRANCH}\`, the commit this release was cut from. The release PR starts no runs of its own until something pushes to the branch.</sub>"
+          REUSED="<sub>Reused from the [\`Unity Test\` run](${TEST_RUN_URL}) of \`${SHORT_SHA}\` on \`${TEST_BRANCH}\`, the commit this release was cut from — this is what was known at the cut. It stays until a \`Unity Test\` run of this PR — started by a push to the branch or a \`force-build\` label — replaces it.</sub>"
 
           TEST_RUNS="${ACTIONS_URL}/workflows/unity-test.yml"
           LINT_STYLE="?logo=jetbrains&logoColor=white&style=for-the-badge"
@@ -239,6 +319,9 @@ jobs:
           if [ "$TEST_STATE" = "norun" ]; then
             LINT_BADGE="![Lint](https://img.shields.io/badge/Lint-Not%20run-lightgrey${LINT_STYLE})"
             LINT_MSG="No \`Unity Test\` run exists for \`${SHORT_SHA}\`: the commit this release was cut from touches nothing the suite watches, so lint never ran on it."
+          elif [ "$TEST_STATE" = "running" ]; then
+            LINT_BADGE="[![Lint](https://img.shields.io/badge/Lint-Running%20on%20dev-yellow${LINT_STYLE})](${TEST_RUN_URL})"
+            LINT_MSG="\`Unity Test\` is still running on \`${TEST_BRANCH}\` for \`${SHORT_SHA}\`, the commit this release was cut from ([run](${TEST_RUN_URL})). Its lint result lands here when it finishes."
           elif [ "$TEST_STATE" = "unknown" ]; then
             LINT_BADGE="![Lint](https://img.shields.io/badge/Lint-Unknown-lightgrey${LINT_STYLE})"
             LINT_MSG="The Actions API did not answer for \`${SHORT_SHA}\`'s \`Unity Test\` run, so the warning count at the cut is unknown — this is not evidence that lint never ran. See the [test runs](${TEST_RUNS})."
@@ -270,6 +353,9 @@ jobs:
           if [ "$TEST_STATE" = "norun" ]; then
             TESTS_BADGE="![Tests](https://img.shields.io/badge/Tests-Not%20run-lightgrey${TESTS_STYLE})"
             TESTS_MSG="No \`Unity Test\` run exists for \`${SHORT_SHA}\`: the commit this release was cut from touches nothing the suite watches, so neither suite ran on it."
+          elif [ "$TEST_STATE" = "running" ]; then
+            TESTS_BADGE="[![Tests](https://img.shields.io/badge/Tests-Running%20on%20dev-yellow${TESTS_STYLE})](${TEST_RUN_URL})"
+            TESTS_MSG="\`Unity Test\` is still running on \`${TEST_BRANCH}\` for \`${SHORT_SHA}\`, the commit this release was cut from ([run](${TEST_RUN_URL})). Its results land here when it finishes."
           elif [ "$TEST_STATE" = "unknown" ]; then
             TESTS_BADGE="![Tests](https://img.shields.io/badge/Tests-Unknown-lightgrey${TESTS_STYLE})"
             TESTS_MSG="The Actions API did not answer for \`${SHORT_SHA}\`'s \`Unity Test\` run, so whether its suites passed is unknown — this is not evidence that they did not. See the [test runs](${TEST_RUNS})."
@@ -296,13 +382,154 @@ jobs:
           } > tests.md
           upsert tests tests.md
 
-          # The benchmark rides a build of *this* PR — pr-comment-artifact-url
-          # dispatches it, and it needs a PR number the dev push's build never
-          # had. So the placeholder's promise ("results land in this section")
-          # is one nothing on a release cut can keep; say so instead.
+          # The benchmark rides a build that reports into *this* PR —
+          # pr-comment-artifact-url dispatches it with the PR number. A dev
+          # build that finished before the cut never had one, so the
+          # placeholder's promise ("results land in this section") is one
+          # nothing at the cut can keep; say what will.
           {
             echo "![Performance](https://img.shields.io/badge/Performance-Not%20dispatched-lightgrey?logo=speedtest&logoColor=white&style=for-the-badge)"
             echo ""
-            echo "No bare-metal benchmark is dispatched for a release cut: the dispatch rides a build of this PR, and this PR was opened by a token whose events start no workflows. Label it \`force-build\` to build the release branch and get one."
+            echo "No benchmark has been dispatched yet: one rides each *successful* build that reports into this PR, and a dev build that finished before the cut reported into none. The first that does — dev's build of \`${SHORT_SHA}\` finishing after the cut, or the release branch's own — dispatches one into this section."
           } > performance.md
           upsert performance performance.md
+
+      # The PR above was opened with GITHUB_TOKEN, whose events start no workflow
+      # runs — the same suppression the CI-status step above exists to work around.
+      # So the InWorld gate has to be started explicitly, by a token that can.
+      #
+      # Dispatching against the release branch is what puts the gate on the PR:
+      # a workflow_dispatch run attaches its checks to the dispatched ref's tip,
+      # and that tip is the PR head. Without this the required check on main
+      # never reports and the release cannot merge.
+      - name: Start the InWorld gate on the release branch
+        env:
+          # GITHUB_TOKEN can dispatch when the lab has no org token.
+          GH_TOKEN: ${{ secrets.ORG_ACCESS_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+
+          # On the dispatch path the gate resolves this commit's build with
+          # wait-minutes 0, so it fails within seconds unless both zips are
+          # already up. Ask it the same question — did both build legs conclude
+          # success — rather than whether a run went green: unity-cloud-build.yml
+          # also concludes green having built nothing, when the commit touches
+          # no Explorer/** file and the matrix never expands, and green having
+          # built one platform, when a windows-only/macos-only label narrows it.
+          # Either would dispatch a gate that immediately reds a brand-new
+          # release PR with nothing wrong in it.
+          #
+          # Runs come back newest first, and only the newest few are worth
+          # asking about — the same candidate cap resolve-explorer-build uses.
+          HEAD_SHA=$(git rev-parse HEAD)
+
+          # Set by the seed step. In these two states the build that will carry
+          # the gate has not finished yet, and pr-comment-artifact-url.yml
+          # (release-gate) dispatches it when that build succeeds; listing runs
+          # here would only end in an error telling the operator to do what the
+          # workflow has already arranged.
+          case "${BUILD_STATE:-}" in
+            building)
+              echo "::notice::dev is still building ${HEAD_SHA:0:7}. When that build succeeds its links are written into the release PR and the InWorld gate is dispatched against ${BRANCH_NAME}; if it does not, the PR is labeled force-build and the release branch's own build does the same."
+              exit 0 ;;
+            forced)
+              echo "::notice::dev's build of ${HEAD_SHA:0:7} failed; the PR was labeled force-build and the InWorld gate is dispatched against ${BRANCH_NAME} when the release branch's build succeeds."
+              exit 0 ;;
+          esac
+
+          # The helper resolve-explorer-build defines, duplicated because a
+          # composite action cannot export a shell function to its caller. Same
+          # justification, more sharply: this step decides on one answer and
+          # then the workflow ends, so a single 5xx must not settle a release
+          # cut. Three attempts five seconds apart cover a transport failure —
+          # a 5xx, a connection reset — and only that; a spent rate limit
+          # refills on an hour boundary, which is why the flags below record
+          # whether the API answered rather than trusting the retry to make it.
+          # stderr is kept on the last attempt so a permanent failure (this
+          # workflow file renamed, say) says what it was instead of vanishing
+          # into "the API did not answer".
+          gh_api_retry() {
+            local out attempt
+            for attempt in 1 2 3; do
+              if [ "$attempt" -lt 3 ]; then
+                if out=$(gh api "$@" 2>/dev/null); then printf '%s' "$out"; return 0; fi
+                sleep 5
+              else
+                if out=$(gh api "$@"); then printf '%s' "$out"; return 0; fi
+              fi
+            done
+            return 1
+          }
+
+          # Absorbed rather than left to set -e, here and on the jobs call
+          # below: an API blip must not red a cut whose branch, PR, labels and
+          # CI status comment have all landed. But it must not be reported as
+          # "no build" either — that is the conflation LISTED/LISTED_NOW exist
+          # to stop in resolve-explorer-build, and it costs more here, because
+          # this message is the operator's only instruction and the workflow
+          # ends after it. LISTED is "the run listing answered at all";
+          # UNEXAMINED is "a candidate's jobs call did not", which leaves that
+          # run neither green nor known to be anything else.
+          LISTED=0
+          UNEXAMINED=0
+          if RUN_IDS=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/workflows/unity-cloud-build.yml/runs?head_sha=${HEAD_SHA}&per_page=50" \
+            --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "push") | .id]'); then
+            LISTED=1
+          else
+            RUN_IDS=''
+          fi
+          if [ -z "$RUN_IDS" ]; then RUN_IDS='[]'; fi
+          LIMIT=$(jq 'length' <<< "$RUN_IDS")
+          if [ "$LIMIT" -gt 5 ]; then LIMIT=5; fi
+
+          LEGS_GREEN=false
+          for (( i = 0; i < LIMIT; i++ )); do
+            RUN_ID=$(jq -r ".[$i]" <<< "$RUN_IDS")
+            if LEGS_GREEN=$(gh_api_retry "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=50" \
+              --jq '[.jobs[] | select(.conclusion == "success") | .name] | any(startswith("Build (macos")) and any(startswith("Build (windows64"))'); then
+              if [ "$LEGS_GREEN" = "true" ]; then break; fi
+            else
+              LEGS_GREEN=false
+              UNEXAMINED=1
+            fi
+          done
+
+          # Three ways to end up not dispatching, and only the last is a build
+          # problem — so they get three messages. All three are `::error::`:
+          # each one ends with the gate unreported and the release unmergeable,
+          # which is not a line in a green log, and the dispatch failure below
+          # already annotates for exactly that outcome.
+          #
+          # None of them says "re-run this workflow". Re-running re-enters the
+          # `Create or update branch` step above, which force-pushes
+          # ${BRANCH_NAME} from dev's current tip — quietly re-cutting the
+          # release from newer commits than the one that was reviewed. Starting
+          # `In-World Tests` by hand is the remedy in every case, and it is the
+          # same instruction the dispatch failure below gives.
+          if [ "$LISTED" = "0" ]; then
+            echo "::error::Could not list unity-cloud-build.yml runs for ${HEAD_SHA:0:7} — the GitHub Actions API did not answer, so no build was ever looked at and the InWorld gate was not started. This says nothing about whether a build exists. The release branch and its PR are fine: start \`In-World Tests\` by hand from the Actions tab against ${BRANCH_NAME}. Do not re-run this workflow — it force-pushes ${BRANCH_NAME} and would re-cut the release from a newer dev tip."
+            exit 0
+          fi
+          if [ "$LEGS_GREEN" != "true" ] && [ "$UNEXAMINED" = "1" ]; then
+            echo "::error::The GitHub Actions API did not answer for at least one build run of ${HEAD_SHA:0:7}, so whether its legs are green is unknown and the InWorld gate was not started. This is not evidence that no build exists. The release branch and its PR are fine: start \`In-World Tests\` by hand from the Actions tab against ${BRANCH_NAME}. Do not re-run this workflow — it force-pushes ${BRANCH_NAME} and would re-cut the release from a newer dev tip."
+            exit 0
+          fi
+          if [ "$LEGS_GREEN" != "true" ]; then
+            echo "::error::No build of ${HEAD_SHA:0:7} has both Build (macos) and Build (windows64) green, so the InWorld gate was not started — it would fail on its first poll. Build the commit: label the release PR \`force-build\` if unity-cloud-build.yml built nothing, or remove a \`windows-only\`/\`macos-only\` label that narrowed its targets. Then start \`In-World Tests\` by hand against ${BRANCH_NAME}. Do not re-run this workflow — it force-pushes ${BRANCH_NAME} and would re-cut the release from a newer dev tip."
+            exit 0
+          fi
+
+          # Loud but deliberately not fatal. `gh workflow run` needs
+          # `actions: write`, which ORG_ACCESS_TOKEN's other uses in this repo
+          # (org membership, PR reviews) do not require, so it may not have it —
+          # and a secret's scopes cannot be inspected from here. Failing the job
+          # would invite a re-run, and re-running this workflow force-pushes the
+          # release branch, quietly re-cutting the release from a newer dev tip.
+          # The branch, PR, labels and CI status comment have all landed by
+          # now; the annotation is what makes the missing gate visible, and the
+          # required check staying unreported is what keeps the release blocked.
+          if ! gh workflow run in-world-tests.yml --ref "$BRANCH_NAME"; then
+            echo "::error::Could not dispatch the InWorld gate against ${BRANCH_NAME}. The likeliest cause is that ORG_ACCESS_TOKEN lacks \`actions: write\` on this repository, which \`gh workflow run\` requires. The release branch and its PR are fine — start \`In-World Tests\` by hand from the Actions tab against ${BRANCH_NAME}, or its required check will sit unreported and the release will not be mergeable."
+            exit 0
+          fi
+          echo "::notice::InWorld gate dispatched against ${BRANCH_NAME}."

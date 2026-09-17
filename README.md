@@ -98,3 +98,25 @@ Expected sections either way:
 - **Performance** → `Not dispatched`, explaining that the benchmark rides a build
   of the PR itself
 - **Automation** → the untouched `On demand` placeholder from the skeleton
+
+### Building / failed dev runs (second round for #10139)
+
+The cut can land while `dev` is still building or testing the commit, or after
+that build failed. `release-cut.yml` is now generated from the real workflow
+(its header lists the substitutions) and the lab has a `dev` line so the stubs
+run on pushes to it. Two markers in the dev commit message drive the stubs:
+`[slow]` (150s jobs, so a cut lands mid-run) and `[fail-build]`. Then run
+**Release Cut** with a suffix. Expected:
+
+- **dev still running** → Build `Building on dev`, Lint/Tests `Running on dev`;
+  when the dev run completes, `pr-comment-*` resolve it to the release PR
+  (`resolve-comment-pr.sh`), fill the sections, and `release-gate` dispatches
+  the stub `In-World Tests` against the release branch.
+- **dev failed before the cut** → the step writes `Building release branch`
+  and labels the PR `force-build`. Without an `ORG_ACCESS_TOKEN` secret the
+  label fails and the section falls back to `Not Found … labeling failed`; add
+  the label by hand and the stubs run on the release PR through the `labeled`
+  event, after which `release-gate` dispatches the gate.
+- **dev fails after the cut** → `release-force-build` in
+  `pr-comment-artifact-url.yml` does the labeling (same token caveat).
+- **dev finished green** → as before; the cut dispatches the gate itself.

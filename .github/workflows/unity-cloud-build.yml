@@ -6,10 +6,24 @@ name: Unity Cloud Build
 # Decentraland_* artifacts so its "did the build actually run?" check passes.
 # Both platform artifacts exist so release-cut.yml's per-platform rows resolve a
 # download id for each; drop one to exercise the row that falls back to S3 only.
-# The sleep keeps the run alive long enough to see the "pending" state.
+#
+# For unity-explorer#10139 it also runs on pushes to dev (the run a release cut
+# reads), on the `labeled` PR event (a force-build label is what re-builds a
+# release PR), and reads two markers off the dev commit message:
+#   [slow]        sleep 150s instead of 30s, so a cut can land mid-build
+#   [fail-build]  fail the build, so a cut finds a failed dev run
+# The push concurrency group mirrors the real one: a newer dev push cancels the
+# build in flight.
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  push:
+    branches: [dev]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,9 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Simulate a build
+        env:
+          MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
-          echo "Pretending to build for ~30s so the pending banner is visible…"
-          sleep 30
+          SECONDS_TO_SLEEP=30
+          case "$MESSAGE" in *"[slow]"*) SECONDS_TO_SLEEP=150 ;; esac
+          echo "Pretending to build for ~${SECONDS_TO_SLEEP}s…"
+          sleep "$SECONDS_TO_SLEEP"
+          case "$MESSAGE" in *"[fail-build]"*) echo "::error::[fail-build] marker — failing as a real build would."; exit 1 ;; esac
           mkdir -p out
           echo "dummy build output" > out/Decentraland_windows64.txt
           echo "dummy build output" > out/Decentraland_macos.txt
